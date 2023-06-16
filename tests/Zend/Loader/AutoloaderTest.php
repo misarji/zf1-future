@@ -1,0 +1,482 @@
+<?php
+
+use PHPUnit\Framework\TestCase;
+use PHPUnit\Framework\TestSuite;
+use PHPUnit\TextUI\TestRunner;
+
+/**
+ * Zend Framework
+ *
+ * LICENSE
+ *
+ * This source file is subject to the new BSD license that is bundled
+ * with this package in the file LICENSE.txt.
+ * It is also available through the world-wide-web at this URL:
+ * http://framework.zend.com/license/new-bsd
+ * If you did not receive a copy of the license and are unable to
+ * obtain it through the world-wide-web, please send an email
+ * to license@zend.com so we can send you a copy immediately.
+ *
+ * @category   Zend
+ * @package    Zend_Loader
+ * @subpackage UnitTests
+ * @copyright  Copyright (c) 2005-2015 Zend Technologies USA Inc. (http://www.zend.com)
+ * @license    http://framework.zend.com/license/new-bsd     New BSD License
+ * @version    $Id$
+ */
+
+if (!defined('PHPUnit_MAIN_METHOD')) {
+    define('PHPUnit_MAIN_METHOD', 'Zend_Loader_AutoloaderTest::main');
+}
+
+/**
+ * @see Zend_Loader_Autoloader
+ */
+require_once 'Zend/Loader/Autoloader.php';
+
+/**
+ * @see Zend_Loader_Autoloader_Interface
+ */
+require_once 'Zend/Loader/Autoloader/Interface.php';
+
+/**
+ * @category   Zend
+ * @package    Zend_Loader
+ * @subpackage UnitTests
+ * @copyright  Copyright (c) 2005-2015 Zend Technologies USA Inc. (http://www.zend.com)
+ * @license    http://framework.zend.com/license/new-bsd     New BSD License
+ * @group      Zend_Loader
+ */
+class Zend_Loader_AutoloaderTest extends TestCase
+{
+    /**
+     * @var mixed[]|mixed
+     */
+    protected $loaders;
+
+    /**
+     * @var string|bool|mixed
+     */
+    protected $includePath;
+
+    /**
+     * @var \Zend_Loader_Autoloader|mixed
+     */
+    protected $autoloader;
+
+    /**
+     * @var null|mixed
+     */
+    protected $error;
+
+    public static function main()
+    {
+        $suite = new TestSuite(__CLASS__);
+        $result = (new TestRunner())->run($suite);
+    }
+
+    protected function setUp(): void
+    {
+        // Store original autoloaders
+        $this->loaders = spl_autoload_functions();
+        if (!is_array($this->loaders)) {
+            // spl_autoload_functions does not return empty array when no
+            // autoloaders registered...
+            $this->loaders = [];
+        }
+
+        // Store original include_path
+        $this->includePath = get_include_path();
+
+        Zend_Loader_Autoloader::resetInstance();
+        $this->autoloader = Zend_Loader_Autoloader::getInstance();
+
+        // initialize 'error' member for tests that utilize error handling
+        $this->error = null;
+    }
+
+    protected function tearDown(): void
+    {
+        // Restore original autoloaders
+        $loaders = spl_autoload_functions();
+        foreach ($loaders as $loader) {
+            spl_autoload_unregister($loader);
+        }
+
+        foreach ($this->loaders as $loader) {
+            spl_autoload_register($loader);
+        }
+
+        // Retore original include_path
+        set_include_path($this->includePath);
+
+        // Reset autoloader instance so it doesn't affect other tests
+        Zend_Loader_Autoloader::resetInstance();
+    }
+
+    public function testAutoloaderShouldBeSingleton()
+    {
+        $autoloader = Zend_Loader_Autoloader::getInstance();
+        $this->assertSame($this->autoloader, $autoloader);
+    }
+
+    public function testSingletonInstanceShouldAllowReset()
+    {
+        Zend_Loader_Autoloader::resetInstance();
+        $autoloader = Zend_Loader_Autoloader::getInstance();
+        $this->assertNotSame($this->autoloader, $autoloader);
+    }
+
+    public function testAutoloaderShouldRegisterItselfWithSplAutoloader()
+    {
+        $autoloaders = spl_autoload_functions();
+        $found = false;
+        foreach ($autoloaders as $loader) {
+            if (is_array($loader)) {
+                if (('autoload' == $loader[1]) && ($loader[0] === get_class($this->autoloader))) {
+                    $found = true;
+                    break;
+                }
+            }
+        }
+        $this->assertTrue($found, 'Autoloader instance not found in spl_autoload stack: ' . var_export($autoloaders, 1));
+    }
+
+    public function testDefaultAutoloaderShouldBeZendLoader()
+    {
+        $this->assertSame(['Zend_Loader', 'loadClass'], $this->autoloader->getDefaultAutoloader());
+    }
+
+    public function testDefaultAutoloaderShouldBeMutable()
+    {
+        $this->autoloader->setDefaultAutoloader([$this, 'autoload']);
+        $this->assertSame([$this, 'autoload'], $this->autoloader->getDefaultAutoloader());
+    }
+
+    public function testSpecifyingInvalidDefaultAutoloaderShouldRaiseException()
+    {
+        $this->expectException(Zend_Loader_Exception::class);
+        $this->autoloader->setDefaultAutoloader(uniqid());
+    }
+
+    public function testZfNamespacesShouldBeRegisteredByDefault()
+    {
+        $namespaces = $this->autoloader->getRegisteredNamespaces();
+        $this->assertContains('Zend_', $namespaces);
+        $this->assertContains('ZendX_', $namespaces);
+    }
+
+    public function testAutoloaderShouldAllowRegisteringArbitraryNamespaces()
+    {
+        $this->autoloader->registerNamespace('Phly_');
+        $namespaces = $this->autoloader->getRegisteredNamespaces();
+        $this->assertContains('Phly_', $namespaces);
+    }
+
+    public function testAutoloaderShouldAllowRegisteringMultipleNamespacesAtOnce()
+    {
+        $this->autoloader->registerNamespace(['Phly_', 'Solar_']);
+        $namespaces = $this->autoloader->getRegisteredNamespaces();
+        $this->assertContains('Phly_', $namespaces);
+        $this->assertContains('Solar_', $namespaces);
+    }
+
+    public function testRegisteringInvalidNamespaceSpecShouldRaiseException()
+    {
+        $this->expectException(Zend_Loader_Exception::class);
+        $o = new stdClass();
+        $this->autoloader->registerNamespace($o);
+    }
+
+    public function testAutoloaderShouldAllowUnregisteringNamespaces()
+    {
+        $this->autoloader->unregisterNamespace('Zend');
+        $namespaces = $this->autoloader->getRegisteredNamespaces();
+        $this->assertNotContains('Zend', $namespaces);
+    }
+
+    public function testAutoloaderShouldAllowUnregisteringMultipleNamespacesAtOnce()
+    {
+        $this->autoloader->unregisterNamespace(['Zend', 'ZendX']);
+        $namespaces = $this->autoloader->getRegisteredNamespaces();
+        $this->assertNotContains('Zend', $namespaces);
+        $this->assertNotContains('ZendX', $namespaces);
+    }
+
+    public function testUnregisteringInvalidNamespaceSpecShouldRaiseException()
+    {
+        $this->expectException(Zend_Loader_Exception::class);
+        $o = new stdClass();
+        $this->autoloader->unregisterNamespace($o);
+    }
+
+    /**
+     * @group ZF-6536
+     */
+    public function testWarningSuppressionShouldBeDisabledByDefault()
+    {
+        $this->assertFalse($this->autoloader->suppressNotFoundWarnings());
+    }
+
+    public function testAutoloaderSuppressNotFoundWarningsFlagShouldBeMutable()
+    {
+        $this->autoloader->suppressNotFoundWarnings(true);
+        $this->assertTrue($this->autoloader->suppressNotFoundWarnings());
+    }
+
+    public function testFallbackAutoloaderFlagShouldBeOffByDefault()
+    {
+        $this->assertFalse($this->autoloader->isFallbackAutoloader());
+    }
+
+    public function testFallbackAutoloaderFlagShouldBeMutable()
+    {
+        $this->autoloader->setFallbackAutoloader(true);
+        $this->assertTrue($this->autoloader->isFallbackAutoloader());
+    }
+
+    public function testUnshiftAutoloaderShouldAddToTopOfAutoloaderStack()
+    {
+        $this->autoloader->unshiftAutoloader('require');
+        $autoloaders = $this->autoloader->getAutoloaders();
+        $test = array_shift($autoloaders);
+        $this->assertEquals('require', $test);
+    }
+
+    public function testUnshiftAutoloaderWithoutNamespaceShouldRegisterAsEmptyNamespace()
+    {
+        $this->autoloader->unshiftAutoloader('require');
+        $autoloaders = $this->autoloader->getNamespaceAutoloaders('');
+        $test = array_shift($autoloaders);
+        $this->assertEquals('require', $test);
+    }
+
+    public function testUnshiftAutoloaderShouldAllowSpecifyingSingleNamespace()
+    {
+        $this->autoloader->unshiftAutoloader('require', 'Foo');
+        $autoloaders = $this->autoloader->getNamespaceAutoloaders('Foo');
+        $test = array_shift($autoloaders);
+        $this->assertEquals('require', $test);
+    }
+
+    public function testUnshiftAutoloaderShouldAllowSpecifyingMultipleNamespaces()
+    {
+        $this->autoloader->unshiftAutoloader('require', ['Foo', 'Bar']);
+
+        $autoloaders = $this->autoloader->getNamespaceAutoloaders('Foo');
+        $test = array_shift($autoloaders);
+        $this->assertEquals('require', $test);
+
+        $autoloaders = $this->autoloader->getNamespaceAutoloaders('Bar');
+        $test = array_shift($autoloaders);
+        $this->assertEquals('require', $test);
+    }
+
+    public function testPushAutoloaderShouldAddToEndOfAutoloaderStack()
+    {
+        $this->autoloader->pushAutoloader('require');
+        $autoloaders = $this->autoloader->getAutoloaders();
+        $test = array_pop($autoloaders);
+        $this->assertEquals('require', $test);
+    }
+
+    public function testPushAutoloaderWithoutNamespaceShouldRegisterAsEmptyNamespace()
+    {
+        $this->autoloader->pushAutoloader('require');
+        $autoloaders = $this->autoloader->getNamespaceAutoloaders('');
+        $test = array_pop($autoloaders);
+        $this->assertEquals('require', $test);
+    }
+
+    public function testPushAutoloaderShouldAllowSpecifyingSingleNamespace()
+    {
+        $this->autoloader->pushAutoloader('require', 'Foo');
+        $autoloaders = $this->autoloader->getNamespaceAutoloaders('Foo');
+        $test = array_pop($autoloaders);
+        $this->assertEquals('require', $test);
+    }
+
+    public function testPushAutoloaderShouldAllowSpecifyingMultipleNamespaces()
+    {
+        $this->autoloader->pushAutoloader('require', ['Foo', 'Bar']);
+
+        $autoloaders = $this->autoloader->getNamespaceAutoloaders('Foo');
+        $test = array_pop($autoloaders);
+        $this->assertEquals('require', $test);
+
+        $autoloaders = $this->autoloader->getNamespaceAutoloaders('Bar');
+        $test = array_pop($autoloaders);
+        $this->assertEquals('require', $test);
+    }
+
+    public function testAutoloaderShouldAllowRemovingConcreteAutoloadersFromStackByCallback()
+    {
+        $this->autoloader->pushAutoloader('require');
+        $this->autoloader->removeAutoloader('require');
+        $autoloaders = $this->autoloader->getAutoloaders();
+        $this->assertNotContains('require', $autoloaders);
+    }
+
+    public function testRemovingAutoloaderShouldAlsoRemoveAutoloaderFromNamespacedAutoloaders()
+    {
+        $this->autoloader->pushAutoloader('require', ['Foo', 'Bar'])
+                         ->pushAutoloader('include');
+        $this->autoloader->removeAutoloader('require');
+        $test = $this->autoloader->getNamespaceAutoloaders('Foo');
+        $this->assertTrue(empty($test));
+        $test = $this->autoloader->getNamespaceAutoloaders('Bar');
+        $this->assertTrue(empty($test));
+    }
+
+    public function testAutoloaderShouldAllowRemovingCallbackFromSpecifiedNamespaces()
+    {
+        $this->autoloader->pushAutoloader('require', ['Foo', 'Bar'])
+                         ->pushAutoloader('include');
+        $this->autoloader->removeAutoloader('require', 'Foo');
+        $test = $this->autoloader->getNamespaceAutoloaders('Foo');
+        $this->assertTrue(empty($test));
+        $test = $this->autoloader->getNamespaceAutoloaders('Bar');
+        $this->assertFalse(empty($test));
+    }
+
+    public function testAutoloadShouldReturnFalseWhenNamespaceIsNotRegistered()
+    {
+        $this->assertFalse(Zend_Loader_Autoloader::autoload('Foo_Bar'));
+    }
+
+    public function testAutoloadShouldReturnFalseWhenNamespaceIsNotRegisteredButClassfileExists()
+    {
+        $this->addTestIncludePath();
+        $this->assertFalse(Zend_Loader_Autoloader::autoload('ZendLoaderAutoloader_Foo'));
+    }
+
+    public function testAutoloadShouldLoadClassWhenNamespaceIsRegisteredAndClassfileExists()
+    {
+        $this->addTestIncludePath();
+        $this->autoloader->registerNamespace('ZendLoaderAutoloader');
+        $result = Zend_Loader_Autoloader::autoload('ZendLoaderAutoloader_Foo');
+        $this->assertFalse($result === false);
+        $this->assertTrue(class_exists('ZendLoaderAutoloader_Foo', false));
+    }
+
+    public function testAutoloadShouldNotSuppressFileNotFoundWarningsWhenFlagIsDisabled()
+    {
+        $this->addTestIncludePath();
+        $this->autoloader->suppressNotFoundWarnings(false);
+        $this->autoloader->registerNamespace('ZendLoaderAutoloader');
+        // set_error_handler([$this, 'handleErrors']);
+        $this->assertFalse(Zend_Loader_Autoloader::autoload('ZendLoaderAutoloader_Bar'));
+        // restore_error_handler();
+        // $this->assertNotNull($this->error);
+    }
+
+    public function testAutoloadShouldReturnTrueIfFunctionBasedAutoloaderMatchesAndReturnsNonFalseValue()
+    {
+        $this->autoloader->pushAutoloader('ZendLoaderAutoloader_Autoload');
+        $this->assertTrue(Zend_Loader_Autoloader::autoload('ZendLoaderAutoloader_Foo_Bar'));
+    }
+
+    public function testAutoloadShouldReturnTrueIfMethodBasedAutoloaderMatchesAndReturnsNonFalseValue()
+    {
+        $this->autoloader->pushAutoloader([$this, 'autoload']);
+        $this->assertTrue(Zend_Loader_Autoloader::autoload('ZendLoaderAutoloader_Foo_Bar'));
+    }
+
+    public function testAutoloadShouldReturnTrueIfAutoloaderImplementationReturnsNonFalseValue()
+    {
+        $this->autoloader->pushAutoloader(new Zend_Loader_AutoloaderTest_Autoloader());
+        $this->assertTrue(Zend_Loader_Autoloader::autoload('ZendLoaderAutoloader_Foo_Bar'));
+    }
+
+    public function testUsingAlternateDefaultLoaderShouldOverrideUsageOfZendLoader()
+    {
+        $this->autoloader->setDefaultAutoloader([$this, 'autoload']);
+        $class = $this->autoloader->autoload('Zend_ThisClass_WilNever_Exist');
+        $this->assertTrue($class);
+        $this->assertFalse(class_exists($class, false));
+    }
+
+    /**
+     * @group ZF-10024
+     */
+    public function testClosuresRegisteredWithAutoloaderShouldBeUtilized()
+    {
+        if (version_compare(PHP_VERSION, '5.3.0', '<')) {
+            $this->markTestSkipped(__METHOD__ . ' requires PHP version 5.3.0 or greater');
+        }
+
+        $closure = require_once dirname(__FILE__) . '/_files/AutoloaderClosure.php';
+        $this->autoloader->pushAutoloader($closure);
+        $this->assertTrue(Zend_Loader_Autoloader::autoload('AutoloaderTest_AutoloaderClosure'));
+    }
+
+    /**
+     * @group ZF-11219
+     */
+    public function testRetrievesAutoloadersFromLongestMatchingNamespace()
+    {
+        $this->autoloader->pushAutoloader([$this, 'autoloadFirstLevel'], 'Level1_')
+                         ->pushAutoloader([$this, 'autoloadSecondLevel'], 'Level1_Level2');
+        $class = 'Level1_Level2_Foo';
+        $als = $this->autoloader->getClassAutoloaders($class);
+        $this->assertEquals(1, count($als));
+        $al = array_shift($als);
+        $this->assertEquals([$this, 'autoloadSecondLevel'], $al);
+    }
+
+    /**
+     * @group ZF-10136
+     */
+    public function testMergedAutoloadersWithoutNamespace()
+    {
+        $this->autoloader
+             ->pushAutoloader('autoloadOne')
+             ->pushAutoloader('autoloadSecond');
+
+        $class = 'Zend_Autoloader_Test';
+        $autoloaders = $this->autoloader->getClassAutoloaders($class);
+        $this->assertEquals(3, count($autoloaders));
+    }
+
+    public function addTestIncludePath()
+    {
+        set_include_path(dirname(__FILE__) . '/_files/' . PATH_SEPARATOR . $this->includePath);
+    }
+
+    public function handleErrors($errno, $errstr)
+    {
+        $this->error = $errstr;
+    }
+
+    public function autoload($class)
+    {
+        return $class;
+    }
+
+    public function autoloadFirstLevel($class)
+    {
+        return $class;
+    }
+
+    public function autoloadSecondLevel($class)
+    {
+        return $class;
+    }
+}
+
+function ZendLoaderAutoloader_Autoload($class)
+{
+    return $class;
+}
+
+class Zend_Loader_AutoloaderTest_Autoloader implements Zend_Loader_Autoloader_Interface
+{
+    public function autoload($class)
+    {
+        return $class;
+    }
+}
+
+if (PHPUnit_MAIN_METHOD == 'Zend_Loader_AutoloaderTest::main') {
+    Zend_Loader_AutoloaderTest::main();
+}
